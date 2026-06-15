@@ -9,7 +9,7 @@ name = "codex-nav-mcp-server"
 path = "src/main.rs"
 
 [dependencies]
-codex-code-nav = { path = "../nidex/codex-rs/code-nav" }
+codex-code-nav = { path = "crates/code-nav" }
 rmcp = { version = "0.12", default-features = false, features = ["base64", "macros", "server", "transport-io"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
