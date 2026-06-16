@@ -1,18 +1,24 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use codex_code_nav::Lang;
+use codex_code_nav::NavIndex;
 use codex_code_nav::find_project_root;
 use codex_code_nav::run_query;
 use codex_code_nav::run_symbols_for_files;
 use codex_code_nav::scan_for_changes;
-use codex_code_nav::Lang;
-use codex_code_nav::NavIndex;
 use rmcp::ErrorData as McpError;
 use rmcp::handler::server::ServerHandler;
 use rmcp::model::CallToolRequestParam;
 use rmcp::model::CallToolResult;
+use rmcp::model::GetPromptRequestParam;
+use rmcp::model::GetPromptResult;
+use rmcp::model::ListPromptsResult;
 use rmcp::model::ListToolsResult;
 use rmcp::model::PaginatedRequestParam;
+use rmcp::model::Prompt;
+use rmcp::model::PromptMessage;
+use rmcp::model::PromptMessageRole;
 use rmcp::model::ServerCapabilities;
 use rmcp::model::ServerInfo;
 use rmcp::model::Tool;
@@ -22,6 +28,8 @@ use serde::Deserialize;
 use serde_json::Value;
 
 const CODEX_NAV_SERVER_VERSION: &str = "0.1.0";
+const CODEX_NAV_PROMPT_NAME: &str = "codex_nav_code_search";
+const CODEX_NAV_PROMPT_DESCRIPTION: &str = "Instructions for using codex-nav MCP tools for source code exploration and tree-sitter queries.";
 
 #[derive(Clone)]
 pub struct NavMcpServer {
@@ -82,7 +90,7 @@ impl NavMcpServer {
                 },
                 "lang": {
                     "type": "string",
-                    "description": "Language to search. Auto-detected from file extension when omitted. One of: bash, c, cpp, go, javascript, python, rust, typescript."
+                    "description": "Language to search. Auto-detected from file extension when omitted. One of: bash, c, cpp, go, javascript, python, rust, swift, typescript."
                 }
             },
             "required": [],
@@ -115,7 +123,7 @@ impl NavMcpServer {
                 },
                 "lang": {
                     "type": "string",
-                    "description": "Language grammar to use. One of: bash, c, cpp, go, javascript, python, rust, typescript."
+                    "description": "Language grammar to use. One of: bash, c, cpp, go, javascript, python, rust, swift, typescript."
                 },
                 "path": {
                     "type": "string",
@@ -138,6 +146,24 @@ impl NavMcpServer {
         )
     }
 
+    fn code_search_prompt() -> Prompt {
+        Prompt::new(
+            CODEX_NAV_PROMPT_NAME,
+            Some(CODEX_NAV_PROMPT_DESCRIPTION),
+            None,
+        )
+    }
+
+    fn code_search_prompt_result() -> GetPromptResult {
+        GetPromptResult {
+            description: Some(CODEX_NAV_PROMPT_DESCRIPTION.to_string()),
+            messages: vec![PromptMessage::new_text(
+                PromptMessageRole::User,
+                crate::PROMPT,
+            )],
+        }
+    }
+
     // ── Helpers ─────────────────────────────────────────────────────
 
     /// Resolve the working directory. Use `CODE_NAV_CWD` env var if set,
@@ -155,12 +181,13 @@ impl NavMcpServer {
     ) -> Result<T, McpError> {
         match request.arguments.as_ref() {
             Some(args) => {
-                let obj: HashMap<String, Value> = args
-                    .iter()
-                    .map(|(k, v)| (k.clone(), v.clone()))
-                    .collect();
+                let obj: HashMap<String, Value> =
+                    args.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
                 serde_json::from_value(Value::Object(obj.into_iter().collect())).map_err(|e| {
-                    McpError::invalid_params(format!("invalid arguments for {tool_name}: {e}"), None)
+                    McpError::invalid_params(
+                        format!("invalid arguments for {tool_name}: {e}"),
+                        None,
+                    )
                 })
             }
             None => Err(McpError::invalid_params(
@@ -191,9 +218,9 @@ async fn handle_code_nav_init(request: &CallToolRequestParam) -> Result<CallTool
         })?;
     }
 
-    NavIndex::warm(&cwd, None).await.map_err(|e| {
-        McpError::internal_error(format!("code_nav_init warm failed: {e}"), None)
-    })?;
+    NavIndex::warm(&cwd, None)
+        .await
+        .map_err(|e| McpError::internal_error(format!("code_nav_init warm failed: {e}"), None))?;
 
     let msg = if args.reset {
         "Index reset and rebuilt successfully."
@@ -201,7 +228,9 @@ async fn handle_code_nav_init(request: &CallToolRequestParam) -> Result<CallTool
         "Index is up to date."
     };
 
-    Ok(CallToolResult::success(vec![rmcp::model::Content::text(msg)]))
+    Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+        msg,
+    )]))
 }
 
 async fn handle_code_symbols(request: &CallToolRequestParam) -> Result<CallToolResult, McpError> {
@@ -217,11 +246,7 @@ async fn handle_code_symbols(request: &CallToolRequestParam) -> Result<CallToolR
     let search_path = match &args.path {
         Some(p) => {
             let p = std::path::PathBuf::from(p);
-            if p.is_absolute() {
-                p
-            } else {
-                cwd.join(p)
-            }
+            if p.is_absolute() { p } else { cwd.join(p) }
         }
         None => cwd,
     };
@@ -237,9 +262,10 @@ async fn handle_code_symbols(request: &CallToolRequestParam) -> Result<CallToolR
 
     // Step 3: get cached mtimes for the search prefix
     let prefix = search_path.to_string_lossy().into_owned();
-    let cached_mtimes = index.get_cached_mtimes(&prefix).await.map_err(|e| {
-        McpError::internal_error(format!("failed to read index mtimes: {e}"), None)
-    })?;
+    let cached_mtimes = index
+        .get_cached_mtimes(&prefix)
+        .await
+        .map_err(|e| McpError::internal_error(format!("failed to read index mtimes: {e}"), None))?;
 
     // Step 4 & 5: walk & parse stale files (CPU-bound)
     let search_path_clone = search_path.clone();
@@ -256,17 +282,12 @@ async fn handle_code_symbols(request: &CallToolRequestParam) -> Result<CallToolR
 
     // Step 6: update index for each re-parsed file
     for (file_path, mtime, symbols) in &freshly_parsed {
-        let ext = file_path
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("");
+        let ext = file_path.extension().and_then(|e| e.to_str()).unwrap_or("");
         if let Some(lang) = Lang::from_extension(ext) {
             index
                 .update_file(file_path, lang, *mtime, symbols)
                 .await
-                .map_err(|e| {
-                    McpError::internal_error(format!("index update failed: {e}"), None)
-                })?;
+                .map_err(|e| McpError::internal_error(format!("index update failed: {e}"), None))?;
         }
     }
 
@@ -283,9 +304,9 @@ async fn handle_code_symbols(request: &CallToolRequestParam) -> Result<CallToolR
         .map_err(|e| McpError::internal_error(format!("failed to query index: {e}"), None))?;
 
     if symbols.is_empty() {
-        return Ok(CallToolResult::success(vec![
-            rmcp::model::Content::text("No symbols found."),
-        ]));
+        return Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+            "No symbols found.",
+        )]));
     }
 
     let content = serde_json::to_string_pretty(&symbols)
@@ -309,7 +330,7 @@ async fn handle_code_query(request: &CallToolRequestParam) -> Result<CallToolRes
     let lang = Lang::from_str(&args.lang).ok_or_else(|| {
         McpError::invalid_params(
             format!(
-                "unknown language {:?}; supported: bash, c, cpp, go, javascript, python, rust, typescript",
+                "unknown language {:?}; supported: bash, c, cpp, go, javascript, python, rust, swift, typescript",
                 args.lang
             ),
             None,
@@ -320,26 +341,21 @@ async fn handle_code_query(request: &CallToolRequestParam) -> Result<CallToolRes
     let search_path = match &args.path {
         Some(p) => {
             let p = std::path::PathBuf::from(p);
-            if p.is_absolute() {
-                p
-            } else {
-                cwd.join(p)
-            }
+            if p.is_absolute() { p } else { cwd.join(p) }
         }
         None => cwd,
     };
 
     let query_str = args.query;
-    let matches =
-        tokio::task::spawn_blocking(move || run_query(&query_str, lang, &search_path))
-            .await
-            .map_err(|e| McpError::internal_error(format!("query task panicked: {e}"), None))?
-            .map_err(|e| McpError::internal_error(format!("query failed: {e}"), None))?;
+    let matches = tokio::task::spawn_blocking(move || run_query(&query_str, lang, &search_path))
+        .await
+        .map_err(|e| McpError::internal_error(format!("query task panicked: {e}"), None))?
+        .map_err(|e| McpError::internal_error(format!("query failed: {e}"), None))?;
 
     if matches.is_empty() {
-        return Ok(CallToolResult::success(vec![
-            rmcp::model::Content::text("No matches found."),
-        ]));
+        return Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+            "No matches found.",
+        )]));
     }
 
     let content = serde_json::to_string_pretty(&matches)
@@ -356,13 +372,16 @@ impl ServerHandler for NavMcpServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo {
             protocol_version: Default::default(),
-            capabilities: ServerCapabilities::builder().enable_tools().build(),
+            capabilities: ServerCapabilities::builder()
+                .enable_tools()
+                .enable_prompts()
+                .build(),
             server_info: rmcp::model::Implementation {
                 name: "codex-nav-mcp-server".into(),
                 version: CODEX_NAV_SERVER_VERSION.into(),
                 ..Default::default()
             },
-            instructions: None,
+            instructions: Some(crate::PROMPT.to_string()),
         }
     }
 
@@ -376,6 +395,35 @@ impl ServerHandler for NavMcpServer {
             next_cursor: None,
             meta: None,
         })
+    }
+
+    async fn list_prompts(
+        &self,
+        _request: Option<PaginatedRequestParam>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListPromptsResult, McpError> {
+        Ok(ListPromptsResult {
+            prompts: vec![Self::code_search_prompt()],
+            next_cursor: None,
+            meta: None,
+        })
+    }
+
+    async fn get_prompt(
+        &self,
+        request: GetPromptRequestParam,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<GetPromptResult, McpError> {
+        if request.name != CODEX_NAV_PROMPT_NAME {
+            return Err(McpError::invalid_params(
+                format!("unknown prompt: {}", request.name),
+                Some(serde_json::json!({
+                    "available_prompts": [CODEX_NAV_PROMPT_NAME]
+                })),
+            ));
+        }
+
+        Ok(Self::code_search_prompt_result())
     }
 
     async fn call_tool(
@@ -434,6 +482,50 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    #[test]
+    fn test_server_advertises_prompt_and_instructions() {
+        let server = NavMcpServer::new();
+        let info = server.get_info();
+
+        assert!(
+            info.capabilities.tools.is_some(),
+            "Expected tools capability"
+        );
+        assert!(
+            info.capabilities.prompts.is_some(),
+            "Expected prompts capability"
+        );
+        assert_eq!(info.instructions.as_deref(), Some(crate::PROMPT));
+    }
+
+    #[test]
+    fn test_code_search_prompt_contains_navigation_instructions() {
+        let prompt = NavMcpServer::code_search_prompt();
+        assert_eq!(prompt.name, CODEX_NAV_PROMPT_NAME);
+        assert_eq!(
+            prompt.description.as_deref(),
+            Some(CODEX_NAV_PROMPT_DESCRIPTION)
+        );
+        assert!(prompt.arguments.is_none());
+
+        let result = NavMcpServer::code_search_prompt_result();
+        assert_eq!(
+            result.description.as_deref(),
+            Some(CODEX_NAV_PROMPT_DESCRIPTION)
+        );
+        assert_eq!(result.messages.len(), 1);
+        assert_eq!(result.messages[0].role, PromptMessageRole::User);
+
+        match &result.messages[0].content {
+            rmcp::model::PromptMessageContent::Text { text } => {
+                assert!(text.contains("code_nav_init"));
+                assert!(text.contains("code_symbols"));
+                assert!(text.contains("code_query"));
+            }
+            other => panic!("Expected text prompt content, got: {other:?}"),
+        }
     }
 
     /// Test the handler functions directly (they're private but accessible from
@@ -572,7 +664,9 @@ pub fn process() -> i32 { helper() }
     async fn test_parse_args_valid() {
         let call = make_call("test", serde_json::json!({"path": "src"}));
         #[derive(serde::Deserialize)]
-        struct Args { path: Option<String> }
+        struct Args {
+            path: Option<String>,
+        }
         let args: Args = NavMcpServer::parse_args(&call, "test").expect("parse");
         assert_eq!(args.path, Some("src".to_string()));
     }
@@ -581,7 +675,10 @@ pub fn process() -> i32 { helper() }
     async fn test_parse_args_missing() {
         let call = make_call("test", serde_json::json!({"query": "hello"}));
         #[derive(serde::Deserialize)]
-        struct Args { path: String }
+        #[allow(dead_code)]
+        struct Args {
+            path: String,
+        }
         let result: Result<Args, _> = NavMcpServer::parse_args(&call, "test");
         assert!(result.is_err(), "Expected error for missing required field");
     }

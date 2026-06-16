@@ -19,7 +19,7 @@ Lists all top-level symbols (functions, structs, classes, enums, traits, etc.) d
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `path` | string | no | File or directory to scan. Defaults to the working directory. |
-| `lang` | string | no | Language to search. Auto-detected from file extension when omitted. One of: `bash`, `c`, `cpp`, `go`, `javascript`, `python`, `rust`, `typescript`. |
+| `lang` | string | no | Language to search. Auto-detected from file extension when omitted. One of: `bash`, `c`, `cpp`, `go`, `javascript`, `python`, `rust`, `swift`, `typescript`. |
 
 ### `code_query`
 
@@ -28,12 +28,25 @@ Runs an arbitrary tree-sitter S-expression query against source files, returning
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `query` | string | yes | Tree-sitter S-expression query with named captures (e.g. `(function_item name: (identifier) @name)`). |
-| `lang` | string | yes | Language grammar to use (same options as `code_symbols`). |
+| `lang` | string | yes | Language grammar to use (same options as `code_symbols`: `bash`, `c`, `cpp`, `go`, `javascript`, `python`, `rust`, `swift`, `typescript`). |
 | `path` | string | no | File or directory to search. Defaults to the working directory. |
+
+## Prompt
+
+The server also exposes an MCP **prompt**, `codex_nav_code_search`, containing guidance on when and how to reach for these tools instead of `grep`/`cat`/`find`. Hosts that surface prompts (e.g. via a slash-command picker) can load it directly; the same text is also sent as the server's `instructions` during initialization.
 
 ## Usage
 
 The server communicates over **stdio transport**, making it compatible with any MCP host (Claude Desktop, VS Code extensions, CLI tools, etc.).
+
+### Choosing the directory to index
+
+The server indexes a single working directory, resolved as follows:
+
+1. The `CODE_NAV_CWD` environment variable, if set.
+2. Otherwise, the process's current working directory.
+
+Because MCP hosts typically launch the server with their own (often unrelated) working directory, **set `CODE_NAV_CWD` to the absolute path of the project you want to index**. All `path` arguments are resolved relative to this directory.
 
 ### Build from source
 
@@ -52,13 +65,16 @@ Add to your `claude_desktop_config.json` (`~/Library/Application Support/Claude/
   "mcpServers": {
     "codex-nav": {
       "command": "/absolute/path/to/codex-nav-mcp-server",
-      "args": []
+      "args": [],
+      "env": {
+        "CODE_NAV_CWD": "/absolute/path/to/your/project"
+      }
     }
   }
 }
 ```
 
-Replace `/absolute/path/to/codex-nav-mcp-server` with the path to the binary (e.g. `target/release/codex-nav-mcp-server` from the project root).
+Replace `/absolute/path/to/codex-nav-mcp-server` with the path to the binary (e.g. `target/release/codex-nav-mcp-server` from the project root), and set `CODE_NAV_CWD` to the project you want to index (see [Choosing the directory to index](#choosing-the-directory-to-index)).
 
 ### VS Code (Cline / Roo Code / etc.)
 
@@ -138,7 +154,7 @@ cargo test
 ## Dependencies
 
 - **[rmcp](https://crates.io/crates/rmcp)** — Rust MCP protocol implementation (transport, macros, server)
-- **[codex-code-nav](https://github.com/nidex/codex-rs)** — Tree-sitter indexing and query engine (local dependency)
+- **codex-code-nav** — Tree-sitter indexing and query engine. Local path dependency, vendored in [`crates/code-nav`](crates/code-nav).
 - **tokio** — Async runtime
 - **serde** / **serde_json** — Argument parsing and output formatting
 - **tracing** / **tracing-subscriber** — Structured logging (to stderr)
@@ -150,8 +166,8 @@ cargo test
 
 ## Supported languages
 
-`bash`, `c`, `cpp`, `go`, `javascript`, `python`, `rust`, `typescript`
+`bash`, `c`, `cpp`, `go`, `javascript`, `python`, `rust`, `swift`, `typescript`
 
 ## License
 
-Apache-2.0
+MIT — see [LICENSE](LICENSE).

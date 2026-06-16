@@ -1,95 +1,84 @@
 # Code Navigation Tools (MCP)
 
-Code navigation tools (`code_nav_init`, `code_symbols`, `code_query`) are provided by the **codex-nav** MCP server. In the tool registry they appear as `mcp__codex-nav__code_nav_init`, `mcp__codex-nav__code_symbols`, and `mcp__codex-nav__code_query`, but this prompt refers to them by their short names for readability.
+The codex-nav MCP server provides three source navigation tools:
 
-**Always prefer `code_symbols` and `code_query` over shell commands for code searches.**
+- `code_nav_init`: initialize or refresh the symbol index for the current working directory.
+- `code_symbols`: list top-level symbols in a file or directory using tree-sitter.
+- `code_query`: run tree-sitter S-expression queries against source files.
 
-## Session-Start Rule (REQUIRED — every session, no exceptions)
+Hosts may display these names with an MCP server prefix. The tool names provided by this server are the short names above.
 
-Call `code_nav_init` before any code search or file exploration. This is fast and ensures accurate results.
+This is structural source-code search, not embedding/vector semantic search. Use it when the question can be answered from syntax, definitions, symbols, call expressions, or other tree-sitter patterns.
 
-```
-Do I need to explore or search code?
-├── YES → first call code_nav_init(), then use code_symbols / code_query
+## Default Workflow
 
-Am I about to call read_file, list_dir, or grep_files to understand code structure?
-├── STOP → use code_symbols instead
-```
+Before the first source-code exploration in a session, call:
 
-Pass `reset: true` only after a large refactor or if results seem stale.
-
-## Before using shell cat/grep/find for code
-
-```
-Do I want to understand a file's structure?
-├── What functions/structs are in this file?    → code_symbols(path="src/foo.rs")
-├── What's defined across a directory?          → code_symbols(path="src/")
-├── Where is X defined?                         → code_query with a definition query
-├── Where is X called?                          → code_query with a call expression query
-└── Plain text / config / logs                  → shell grep is fine
+```text
+code_nav_init()
 ```
 
-**NEVER do this when code_symbols/code_query are available:**
-- ❌ `shell ["cat", "frontend.rs"]` to understand its structure → ✅ `code_symbols(path="frontend.rs")`
-- ❌ `shell ["cat", "mod.rs"]` to find functions → ✅ `code_symbols(path="mod.rs")`
-- ❌ `shell ["grep", "-rn", "fn handle_request", "."]` → ✅ `code_query` with a definition query
-- ❌ `shell ["grep", "-rn", "class OrdersClient"]` → ✅ `code_query` with a struct/class definition query
-- ❌ `shell ["find", "src", "-name", "*.rs"]` + cat each file → ✅ `code_symbols(path="src/")`
-- ❌ `read_file(file_path="ingest.rs")` to see its structure → ✅ `code_symbols(path="ingest.rs")`
-- ❌ `read_file` on multiple files to explore a module → ✅ `code_symbols(path="src/ingest/")`
-- ❌ `list_dir(dir_path="src/api")` + reading each file → ✅ `code_symbols(path="src/api/")`
-- ❌ `grep_files(pattern="*.rs", path="api")` to find files → ✅ `code_symbols(path="api/")`
-- ❌ Read an entire file to see its methods → ✅ `code_symbols(path="src/client.rs")`
+Use `reset: true` only after a large refactor, suspected index corruption, or stale results.
 
-## Question → Right Tool
+For source code:
 
-| Question | Tool |
-|----------|------|
-| "What functions are in this file?" | `code_symbols(path="file.rs")` |
-| "What's defined in this directory?" | `code_symbols(path="src/")` |
-| "Where is `handle_event` defined?" | `code_query` — function/method definition query |
-| "Where is `handle_event` called?" | `code_query` — call expression query |
-| "Where is struct `Config` defined?" | `code_query` — struct definition query |
-| "What implements trait `Renderer`?" | `code_query` — impl block query |
+- Use `code_symbols(path="src/foo.rs")` to understand what a file defines.
+- Use `code_symbols(path="src/")` to scan a module or directory.
+- Use `code_query` to find definitions, calls, impls, or language syntax patterns.
 
-## Tree-sitter query examples (Rust)
+For plain text, config files, logs, generated data, or a quick literal substring search, normal file or shell search tools are still appropriate.
 
-```
-# Where is the function handle_event defined?
+## Query Selection
+
+| Question | Prefer |
+|----------|--------|
+| What functions/types are in this file? | `code_symbols(path="file.rs")` |
+| What is defined in this directory? | `code_symbols(path="src/")` |
+| Where is `handle_event` defined? | `code_query` with a function/method definition query |
+| Where is `handle_event` called? | `code_query` with a call expression query |
+| Where is struct/class `Config` defined? | `code_query` with a type/class definition query |
+| What implements trait/interface `Renderer`? | `code_query` with an impl/interface query |
+
+If exact tree-sitter syntax is uncertain, first inspect symbols with `code_symbols`, then use a narrower `code_query` or fall back to literal text search.
+
+## Rust Query Examples
+
+```scheme
+; Where is the function handle_event defined?
 (function_item name: (identifier) @name (#eq? @name "handle_event")) @fn
 
-# Where is handle_event called?
+; Where is handle_event called?
 (call_expression function: (identifier) @fn (#eq? @fn "handle_event")) @call
 
-# Where is handle_event called as a method?
+; Where is handle_event called as a method?
 (call_expression function: (field_expression field: (field_identifier) @method (#eq? @method "handle_event"))) @call
 
-# Where is struct Config defined?
+; Where is struct Config defined?
 (struct_item name: (type_identifier) @name (#eq? @name "Config")) @struct
 
-# Where is enum Status defined?
+; Where is enum Status defined?
 (enum_item name: (type_identifier) @name (#eq? @name "Status")) @enum
 
-# What implements the Renderer trait?
+; What implements the Renderer trait?
 (impl_item trait: (type_identifier) @trait (#eq? @trait "Renderer")) @impl
 ```
 
-## Tree-sitter query examples (Python)
+## Python Query Examples
 
-```
-# Where is market_order() called?
+```scheme
+; Where is market_order() called?
 (call function: (identifier) @fn (#eq? @fn "market_order")) @call
 
-# Where is OrdersClient.market_order called as a method?
+; Where is OrdersClient.market_order called as a method?
 (call function: (attribute attribute: (identifier) @method (#eq? @method "market_order"))) @call
 
-# Where is OrdersClient defined?
+; Where is OrdersClient defined?
 (class_definition name: (identifier) @name (#eq? @name "OrdersClient")) @class
 
-# Where is the market_order function defined?
+; Where is market_order defined?
 (function_definition name: (identifier) @name (#eq? @name "market_order")) @fn
 ```
 
 Supported languages: `bash`, `c`, `cpp`, `go`, `javascript`, `python`, `rust`, `typescript`.
 
-Named captures (e.g. `@fn`, `@call`) label results — use them to get meaningful output.
+Use named captures such as `@fn`, `@call`, and `@name`; they make results easier to interpret.
