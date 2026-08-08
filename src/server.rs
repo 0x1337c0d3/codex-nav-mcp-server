@@ -9,19 +9,20 @@ use codex_code_nav::run_symbols_for_files;
 use codex_code_nav::scan_for_changes;
 use rmcp::ErrorData as McpError;
 use rmcp::handler::server::ServerHandler;
-use rmcp::model::CallToolRequestParam;
+use rmcp::model::CallToolRequestParams;
 use rmcp::model::CallToolResult;
-use rmcp::model::GetPromptRequestParam;
+use rmcp::model::GetPromptRequestParams;
 use rmcp::model::GetPromptResult;
 use rmcp::model::ListPromptsResult;
 use rmcp::model::ListToolsResult;
-use rmcp::model::PaginatedRequestParam;
+use rmcp::model::PaginatedRequestParams;
 use rmcp::model::Prompt;
 use rmcp::model::PromptMessage;
-use rmcp::model::PromptMessageRole;
+use rmcp::model::Role;
 use rmcp::model::ServerCapabilities;
-use rmcp::model::ServerInfo;
+use rmcp::model::InitializeResult;
 use rmcp::model::Tool;
+use rmcp::model::ContentBlock;
 use rmcp::service::RequestContext;
 use rmcp::service::RoleServer;
 use serde::Deserialize;
@@ -155,13 +156,11 @@ impl NavMcpServer {
     }
 
     fn code_search_prompt_result() -> GetPromptResult {
-        GetPromptResult {
-            description: Some(CODEX_NAV_PROMPT_DESCRIPTION.to_string()),
-            messages: vec![PromptMessage::new_text(
-                PromptMessageRole::User,
-                crate::PROMPT,
-            )],
-        }
+        GetPromptResult::new(vec![PromptMessage::new_text(
+            Role::User,
+            crate::PROMPT,
+        )])
+        .with_description(CODEX_NAV_PROMPT_DESCRIPTION)
     }
 
     // ── Helpers ─────────────────────────────────────────────────────
@@ -176,14 +175,12 @@ impl NavMcpServer {
     }
 
     fn parse_args<T: for<'de> Deserialize<'de>>(
-        request: &CallToolRequestParam,
+        request: &CallToolRequestParams,
         tool_name: &str,
     ) -> Result<T, McpError> {
         match request.arguments.as_ref() {
             Some(args) => {
-                let obj: HashMap<String, Value> =
-                    args.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
-                serde_json::from_value(Value::Object(obj.into_iter().collect())).map_err(|e| {
+                serde_json::from_value(serde_json::Value::Object(args.clone())).map_err(|e| {
                     McpError::invalid_params(
                         format!("invalid arguments for {tool_name}: {e}"),
                         None,
@@ -200,7 +197,7 @@ impl NavMcpServer {
 
 // ── Internal handlers (not part of the trait) ─────────────────────
 
-async fn handle_code_nav_init(request: &CallToolRequestParam) -> Result<CallToolResult, McpError> {
+async fn handle_code_nav_init(request: &CallToolRequestParams) -> Result<CallToolResult, McpError> {
     #[derive(Deserialize)]
     struct CodeNavInitArgs {
         #[serde(default)]
@@ -228,12 +225,12 @@ async fn handle_code_nav_init(request: &CallToolRequestParam) -> Result<CallTool
         "Index is up to date."
     };
 
-    Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+    Ok(CallToolResult::success(vec![ContentBlock::text(
         msg,
     )]))
 }
 
-async fn handle_code_symbols(request: &CallToolRequestParam) -> Result<CallToolResult, McpError> {
+async fn handle_code_symbols(request: &CallToolRequestParams) -> Result<CallToolResult, McpError> {
     #[derive(Deserialize)]
     struct CodeSymbolsArgs {
         path: Option<String>,
@@ -304,7 +301,7 @@ async fn handle_code_symbols(request: &CallToolRequestParam) -> Result<CallToolR
         .map_err(|e| McpError::internal_error(format!("failed to query index: {e}"), None))?;
 
     if symbols.is_empty() {
-        return Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+        return Ok(CallToolResult::success(vec![ContentBlock::text(
             "No symbols found.",
         )]));
     }
@@ -312,12 +309,12 @@ async fn handle_code_symbols(request: &CallToolRequestParam) -> Result<CallToolR
     let content = serde_json::to_string_pretty(&symbols)
         .map_err(|e| McpError::internal_error(format!("failed to serialize symbols: {e}"), None))?;
 
-    Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+    Ok(CallToolResult::success(vec![ContentBlock::text(
         content,
     )]))
 }
 
-async fn handle_code_query(request: &CallToolRequestParam) -> Result<CallToolResult, McpError> {
+async fn handle_code_query(request: &CallToolRequestParams) -> Result<CallToolResult, McpError> {
     #[derive(Deserialize)]
     struct CodeQueryArgs {
         query: String,
@@ -353,7 +350,7 @@ async fn handle_code_query(request: &CallToolRequestParam) -> Result<CallToolRes
         .map_err(|e| McpError::internal_error(format!("query failed: {e}"), None))?;
 
     if matches.is_empty() {
-        return Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+        return Ok(CallToolResult::success(vec![ContentBlock::text(
             "No matches found.",
         )]));
     }
@@ -361,7 +358,7 @@ async fn handle_code_query(request: &CallToolRequestParam) -> Result<CallToolRes
     let content = serde_json::to_string_pretty(&matches)
         .map_err(|e| McpError::internal_error(format!("failed to serialize matches: {e}"), None))?;
 
-    Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+    Ok(CallToolResult::success(vec![ContentBlock::text(
         content,
     )]))
 }
@@ -369,74 +366,68 @@ async fn handle_code_query(request: &CallToolRequestParam) -> Result<CallToolRes
 // ── ServerHandler trait implementation ────────────────────────────
 
 impl ServerHandler for NavMcpServer {
-    fn get_info(&self) -> ServerInfo {
-        ServerInfo {
-            protocol_version: Default::default(),
-            capabilities: ServerCapabilities::builder()
+    fn get_info(&self) -> InitializeResult {
+        InitializeResult::new(
+            ServerCapabilities::builder()
                 .enable_tools()
                 .enable_prompts()
                 .build(),
-            server_info: rmcp::model::Implementation {
-                name: "codex-nav-mcp-server".into(),
-                version: CODEX_NAV_SERVER_VERSION.into(),
-                ..Default::default()
-            },
-            instructions: Some(crate::PROMPT.to_string()),
-        }
+        )
+        .with_server_info(rmcp::model::Implementation::new(
+            "codex-nav-mcp-server",
+            CODEX_NAV_SERVER_VERSION,
+        ))
+        .with_instructions(crate::PROMPT)
     }
 
     async fn list_tools(
         &self,
-        _request: Option<PaginatedRequestParam>,
+        _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, McpError> {
-        Ok(ListToolsResult {
-            tools: self.tools.as_ref().clone(),
-            next_cursor: None,
-            meta: None,
-        })
+        Ok(ListToolsResult::with_all_items(
+            self.tools.as_ref().clone(),
+        ))
     }
 
     async fn list_prompts(
         &self,
-        _request: Option<PaginatedRequestParam>,
+        _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListPromptsResult, McpError> {
-        Ok(ListPromptsResult {
-            prompts: vec![Self::code_search_prompt()],
-            next_cursor: None,
-            meta: None,
-        })
+        Ok(ListPromptsResult::with_all_items(vec![Self::code_search_prompt()]))
     }
 
     async fn get_prompt(
         &self,
-        request: GetPromptRequestParam,
+        request: GetPromptRequestParams,
         _context: RequestContext<RoleServer>,
-    ) -> Result<GetPromptResult, McpError> {
+    ) -> Result<rmcp::model::GetPromptResponse, McpError> {
         if request.name != CODEX_NAV_PROMPT_NAME {
             return Err(McpError::invalid_params(
-                format!("unknown prompt: {}", request.name),
-                Some(serde_json::json!({
-                    "available_prompts": [CODEX_NAV_PROMPT_NAME]
-                })),
+                format!("Unknown prompt: {}", request.name),
+                None,
             ));
         }
 
-        Ok(Self::code_search_prompt_result())
+        Ok(GetPromptResult::new(vec![PromptMessage::new_text(
+            Role::User,
+            crate::PROMPT,
+        )])
+        .with_description(CODEX_NAV_PROMPT_DESCRIPTION).into())
     }
 
     async fn call_tool(
         &self,
-        request: CallToolRequestParam,
+        request: CallToolRequestParams,
         _context: RequestContext<RoleServer>,
-    ) -> Result<CallToolResult, McpError> {
+    ) -> Result<rmcp::model::CallToolResponse, McpError> {
         match request.name.as_ref() {
-            "code_nav_init" => handle_code_nav_init(&request).await,
-            "code_symbols" => handle_code_symbols(&request).await,
-            "code_query" => handle_code_query(&request).await,
-            other => Err(McpError::invalid_params(
-                format!("unknown tool: {other}"),
+            "code_nav_init" => handle_code_nav_init(&request).await.map(Into::into),
+            "code_symbols" => handle_code_symbols(&request).await.map(Into::into),
+            "code_query" => handle_code_query(&request).await.map(Into::into),
+            _ => Err(McpError::invalid_params(
+                format!("Unknown tool: {}", request.name),
                 None,
             )),
         }
