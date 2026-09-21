@@ -13,7 +13,7 @@ fn print_usage() {
     eprintln!("  codex-code-nav symbols <path> [lang]");
     eprintln!("  codex-code-nav query <lang> <query> <path>");
     eprintln!();
-    eprintln!("Languages: bash, c, cpp, go, javascript, python, rust, typescript");
+    eprintln!("Languages: bash, c, cpp, go, javascript, python, rust, swift, typescript");
     eprintln!();
     eprintln!("Examples:");
     eprintln!("  codex-code-nav symbols src/main.rs");

@@ -79,6 +79,6 @@ If exact tree-sitter syntax is uncertain, first inspect symbols with `code_symbo
 (function_definition name: (identifier) @name (#eq? @name "market_order")) @fn
 ```
 
-Supported languages: `bash`, `c`, `cpp`, `go`, `javascript`, `python`, `rust`, `typescript`.
+Supported languages: `bash`, `c`, `cpp`, `go`, `javascript`, `python`, `rust`, `swift`, `typescript`.
 
 Use named captures such as `@fn`, `@call`, and `@name`; they make results easier to interpret.

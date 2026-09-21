@@ -87,3 +87,22 @@ impl Lang {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::Lang;
+
+    #[test]
+    fn recognizes_swift_language_and_extension() {
+        assert_eq!(Lang::from_str("swift"), Some(Lang::Swift));
+        assert_eq!(Lang::from_str("SWIFT"), Some(Lang::Swift));
+        assert_eq!(Lang::from_extension("swift"), Some(Lang::Swift));
+        assert_eq!(Lang::Swift.as_str(), "swift");
+        assert_eq!(Lang::Swift.extensions(), &["swift"]);
+    }
+
+    #[test]
+    fn loads_swift_grammar() {
+        let _ = Lang::Swift.grammar();
+    }
+}
